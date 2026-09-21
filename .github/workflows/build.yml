@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --win nsis portable --x64
+            artifact: petdesk-windows-x64
+            files: |
+              dist/petdesk-setup-x64.exe
+              dist/petdesk-portable-x64.exe
+          # PetDesk is Windows-first today; these keep the cross-platform build from rotting.
+          - os: ubuntu-latest
+            args: --linux AppImage
+            artifact: petdesk-linux
+            files: dist/*.AppImage
+          - os: macos-latest
+            args: --mac dmg
+            artifact: petdesk-macos
+            files: dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # koffi and mica-electron ship prebuilt binaries, so no node-gyp / Visual Studio toolchain is needed.
+      - run: npm ci
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          # Code-signing placeholder: add these repository secrets to sign the Windows/macOS builds.
+          # electron-builder builds unsigned when they are empty (forks, PRs from forks).
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Without a certificate, skip macOS identity auto-discovery instead of failing
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
